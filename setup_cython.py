@@ -77,12 +77,18 @@ def build_extension(dir_name, extension_name, target_pydevd_name, force_cython, 
                 "%s/%s.pyx" % (dir_name, target_pydevd_name,),
             ])
 
-            # This is needed in CPython 3.8 to access PyInterpreterState.eval_frame.
-            # i.e.: we change #include "pystate.h" to also #include "internal/pycore_pystate.h"
-            # if compiling on Python 3.8.
+            # Hacks needed in CPython 3.8 and 3.9 to access PyInterpreterState.eval_frame.
             for c_file in c_files:
                 with open(c_file, 'r') as stream:
                     c_file_contents = stream.read()
+
+                if '#include "internal/pycore_gc.h"' not in c_file_contents:
+                    c_file_contents = c_file_contents.replace('#include "Python.h"', '''#include "Python.h"
+#if PY_VERSION_HEX >= 0x03090000
+#include "internal/pycore_gc.h"
+#include "internal/pycore_interp.h"
+#endif
+''')
 
                 if '#include "internal/pycore_pystate.h"' not in c_file_contents:
                     c_file_contents = c_file_contents.replace('#include "pystate.h"', '''#include "pystate.h"
