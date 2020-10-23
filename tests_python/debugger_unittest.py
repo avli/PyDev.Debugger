@@ -405,7 +405,14 @@ class DebuggerRunner(object):
         ret = [
             writer.get_pydevd_file(),
             '--DEBUG_RECORD_SOCKET_READS',
-            '--qt-support',
+        ]
+
+        if not IS_PY36_OR_GREATER or not IS_CPYTHON or not TEST_CYTHON:
+            # i.e.: in frame-eval mode we support native threads, whereas
+            # on other cases we need the qt monkeypatch.
+            ret += ['--qt-support']
+
+        ret += [
             '--client',
             localhost,
             '--port',

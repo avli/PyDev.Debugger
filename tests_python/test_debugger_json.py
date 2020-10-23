@@ -20,7 +20,7 @@ from _pydevd_bundle.pydevd_constants import (int_types, IS_64BIT_PROCESS,
     IS_PYPY, GENERATED_LEN_ATTR_NAME, IS_WINDOWS, IS_LINUX)
 from tests_python import debugger_unittest
 from tests_python.debug_constants import TEST_CHERRYPY, IS_PY2, TEST_DJANGO, TEST_FLASK, IS_PY26, \
-    IS_PY27, IS_CPYTHON, TEST_GEVENT
+    IS_PY27, IS_CPYTHON, TEST_GEVENT, TEST_CYTHON
 from tests_python.debugger_unittest import (IS_JYTHON, IS_APPVEYOR, overrides,
     get_free_port, wait_for_condition)
 from _pydevd_bundle.pydevd_utils import DAPGrouper
@@ -3442,8 +3442,8 @@ def test_ppid(case_setup, pyfile):
 
     def update_command_line_args(writer, args):
         ret = debugger_unittest.AbstractWriterThread.update_command_line_args(writer, args)
-        ret.insert(ret.index('--qt-support'), '--ppid')
-        ret.insert(ret.index('--qt-support'), '22')
+        ret.insert(ret.index('--DEBUG_RECORD_SOCKET_READS'), '--ppid')
+        ret.insert(ret.index('--DEBUG_RECORD_SOCKET_READS'), '22')
         return ret
 
     with case_setup.test_file(
@@ -4128,7 +4128,7 @@ def test_no_subprocess_patching(case_setup_multiprocessing, apply_multiprocessin
 
     def update_command_line_args(writer, args):
         ret = debugger_unittest.AbstractWriterThread.update_command_line_args(writer, args)
-        ret.insert(ret.index('--qt-support'), '--multiprocess')
+        ret.insert(ret.index('--DEBUG_RECORD_SOCKET_READS'), '--multiprocess')
         if apply_multiprocessing_patch:
             ret.append('apply-multiprocessing-patch')
         return ret
@@ -4932,6 +4932,43 @@ print('TEST SUCEEDED')
 
         json_facade.write_continue()
 
+        writer.finished_ok = True
+
+
+@pytest.mark.skipif(not IS_WINDOWS or not IS_PY36_OR_GREATER or not IS_CPYTHON or not TEST_CYTHON, reason='Windows only test and only Python 3.6 onwards.')
+def test_native_threads(case_setup, pyfile):
+
+    @pyfile
+    def case_native_thread():
+        from ctypes import windll, WINFUNCTYPE, c_uint32, c_void_p, c_size_t
+        import time
+
+        ThreadProc = WINFUNCTYPE(c_uint32, c_void_p)
+
+        entered_thread = [False]
+
+        @ThreadProc
+        def method(_):
+            entered_thread[0] = True  # Break here
+            return 0
+
+        windll.kernel32.CreateThread(None, c_size_t(0), method, None, c_uint32(0), None)
+        while not entered_thread[0]:
+            time.sleep(.1)
+
+        print('TEST SUCEEDED')
+
+    with case_setup.test_file(case_native_thread) as writer:
+        json_facade = JsonFacade(writer)
+
+        line = writer.get_line_index_with_content('Break here')
+        json_facade.write_launch(justMyCode=False)
+        json_facade.write_set_breakpoints(line)
+        json_facade.write_make_initial_run()
+
+        json_facade.wait_for_thread_stopped(line=line)
+
+        json_facade.write_continue()
         writer.finished_ok = True
 
 
