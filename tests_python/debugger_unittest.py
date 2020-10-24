@@ -1021,7 +1021,7 @@ class AbstractWriterThread(threading.Thread):
             assert frame_file.endswith(file), 'Expected hit to be in file %s, was: %s' % (file, frame_file)
 
         if line is not None:
-            assert line == frame_line, 'Expected hit to be in line %s, was: %s' % (line, frame_line)
+            assert line == frame_line, 'Expected hit to be in line %s, was: %s (in file: %s)' % (line, frame_line, frame_file)
 
         if name is not None:
             if not isinstance(name, (list, tuple, set)):

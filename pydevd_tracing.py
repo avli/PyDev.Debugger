@@ -1,6 +1,6 @@
 from _pydevd_bundle.pydevd_constants import get_frame, IS_CPYTHON, IS_64BIT_PROCESS, IS_WINDOWS, \
     IS_LINUX, IS_MAC, IS_PY2, DebugInfoHolder, LOAD_NATIVE_LIB_FLAG, \
-    ENV_FALSE_LOWER_VALUES
+    ENV_FALSE_LOWER_VALUES, GlobalDebuggerHolder, ForkSafeLock
 from _pydev_imps._pydev_saved_modules import thread, threading
 from _pydev_bundle import pydev_log, pydev_monkey
 from os.path import os
@@ -79,7 +79,7 @@ def _internal_set_trace(tracing_func):
 
 def SetTrace(tracing_func):
     if tracing_func is not None:
-        if set_trace_to_threads(tracing_func, thread_idents=[thread.get_ident()], create_dummy_thread=True) == 0:
+        if set_trace_to_threads(tracing_func, thread_idents=[thread.get_ident()], create_dummy_thread=False) == 0:
             # If we can use our own tracer instead of the one from sys.settrace, do it (the reason
             # is that this is faster than the Python version because we don't call
             # PyFrame_FastToLocalsWithError and PyFrame_LocalsToFast at each event!
@@ -105,8 +105,29 @@ def restore_sys_set_trace_func():
         TracingFunctionHolder._original_tracing = None
 
 
-def load_python_helper_lib():
-    if not IS_CPYTHON or ctypes is None or sys.version_info[:2] > (3, 9) or hasattr(sys, 'gettotalrefcount') or LOAD_NATIVE_LIB_FLAG in ENV_FALSE_LOWER_VALUES:
+_lock = ForkSafeLock()
+
+
+def _load_python_helper_lib():
+    try:
+        # If it's already loaded, just return it.
+        return _load_python_helper_lib.__lib__
+    except AttributeError:
+        pass
+    with _lock:
+        try:
+            return _load_python_helper_lib.__lib__
+        except AttributeError:
+            pass
+
+        lib = _load_python_helper_lib_uncached()
+        _load_python_helper_lib.__lib__ = lib
+        return lib
+
+
+def _load_python_helper_lib_uncached():
+    if (not IS_CPYTHON or ctypes is None or sys.version_info[:2] > (3, 9)
+            or hasattr(sys, 'gettotalrefcount') or LOAD_NATIVE_LIB_FLAG in ENV_FALSE_LOWER_VALUES):
         return None
 
     if IS_WINDOWS:
@@ -156,11 +177,6 @@ def load_python_helper_lib():
 def set_trace_to_threads(tracing_func, thread_idents=None, create_dummy_thread=True):
     assert tracing_func is not None
 
-    lib = load_python_helper_lib()
-    if lib is None:  # This is the case if it's not CPython.
-        pydev_log.info('Unable to load helper lib to set tracing to all threads (unsupported python vm).')
-        return -1
-
     pydev_log.info('Successfully Loaded helper lib to set tracing to all threads.')
 
     ret = 0
@@ -180,6 +196,11 @@ def set_trace_to_threads(tracing_func, thread_idents=None, create_dummy_thread=T
     curr_ident = thread.get_ident()
     curr_thread = threading._active.get(curr_ident)
 
+    if curr_ident in thread_idents:
+        thread_idents = list(thread_idents)
+        thread_idents.remove(curr_ident)
+        thread_idents.insert(0, curr_ident)
+
     for thread_ident in thread_idents:
         # If that thread is not available in the threading module we also need to create a
         # dummy thread for it (otherwise it'll be invisible to the debugger).
@@ -198,6 +219,9 @@ def set_trace_to_threads(tracing_func, thread_idents=None, create_dummy_thread=T
                 t = _DummyThread()
                 # Reset to the base class (don't expose our own version of the class).
                 t.__class__ = threading._DummyThread
+
+                if thread_ident == curr_ident:
+                    curr_thread = t
 
                 with threading._active_limbo_lock:
                     # On Py2 it'll put in active getting the current indent, not using the
@@ -235,16 +259,21 @@ def set_trace_to_threads(tracing_func, thread_idents=None, create_dummy_thread=T
         # Note: The set_trace_func is not used anymore in the C side.
         set_trace_func = TracingFunctionHolder._original_tracing or sys.settrace
 
-        result = lib.AttachDebuggerTracing(
-            ctypes.c_int(show_debug_info),
-            ctypes.py_object(set_trace_func),
-            ctypes.py_object(tracing_func),
-            ctypes.c_uint(thread_ident),
-            ctypes.py_object(None),
-        )
-        if result != 0:
-            pydev_log.info('Unable to set tracing for existing thread. Result: %s', result)
-            ret = result
+        lib = _load_python_helper_lib()
+        if lib is None:  # This is the case if it's not CPython.
+            pydev_log.info('Unable to load helper lib to set tracing to all threads (unsupported python vm).')
+            ret = -1
+        else:
+            result = lib.AttachDebuggerTracing(
+                ctypes.c_int(show_debug_info),
+                ctypes.py_object(set_trace_func),
+                ctypes.py_object(tracing_func),
+                ctypes.c_uint(thread_ident),
+                ctypes.py_object(None),
+            )
+            if result != 0:
+                pydev_log.info('Unable to set tracing for existing thread. Result: %s', result)
+                ret = result
 
     return ret
 
